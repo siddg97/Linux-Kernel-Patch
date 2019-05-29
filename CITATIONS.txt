@@ -1,0 +1,8 @@
+CITATIONS:-
+	- Assignment 4				:	Description on course homepage
+	- Custom Kernel Guide			: 	link in assignment description
+	- Guide to Linux System Calls		:	link in assignment description
+	- Guide to Generating Kernel Patches 	:	link in assignment description
+	- Linux Manual				:	man7.org/linux/man-pages/
+	- Linux Kernel Source Code		:	https://elixir.bootlin.com/linux/latest/
+	- Linux Kernel Documentation		:	https://www.kernel.org/

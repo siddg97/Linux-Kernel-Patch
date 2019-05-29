@@ -1,0 +1,293 @@
+From a1592439bc275c9481a0087614d2934241b54c7f Mon Sep 17 00:00:00 2001
+From: Siddharth Gupta <sga94@sfu.ca>
+Date: Sun, 24 Mar 2019 03:14:06 -0700
+Subject: [PATCH] a4 cmpt300
+
+---
+ Makefile                               |  2 +-
+ arch/x86/entry/syscalls/syscall_64.tbl |  3 +
+ cmpt300/Makefile                       |  1 +
+ cmpt300/array_stats.c                  | 61 ++++++++++++++++
+ cmpt300/array_stats.h                  | 10 +++
+ cmpt300/process_ancestors.c            | 99 ++++++++++++++++++++++++++
+ cmpt300/process_ancestors.h            | 17 +++++
+ include/linux/syscalls.h               | 10 +++
+ 8 files changed, 202 insertions(+), 1 deletion(-)
+ create mode 100644 cmpt300/Makefile
+ create mode 100644 cmpt300/array_stats.c
+ create mode 100644 cmpt300/array_stats.h
+ create mode 100644 cmpt300/process_ancestors.c
+ create mode 100644 cmpt300/process_ancestors.h
+
+diff --git a/Makefile b/Makefile
+index c83abc1e689b..10364c55d69b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -970,7 +970,7 @@ endif
+ PHONY += prepare0
+ 
+ ifeq ($(KBUILD_EXTMOD),)
+-core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/
++core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/ cmpt300/
+ 
+ vmlinux-dirs	:= $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
+ 		     $(core-y) $(core-m) $(drivers-y) $(drivers-m) \
+diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+index f0b1709a5ffb..be20768d2185 100644
+--- a/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -344,6 +344,9 @@
+ 333	common	io_pgetevents		__x64_sys_io_pgetevents
+ 334	common	rseq			__x64_sys_rseq
+ 
++341 common  array_stats		__x64_sys_array_stats
++342 common  process_ancestors	__x64_sys_process_ancestors
++
+ #
+ # x32-specific system call numbers start at 512 to avoid cache impact
+ # for native 64-bit operation. The __x32_compat_sys stubs are created
+diff --git a/cmpt300/Makefile b/cmpt300/Makefile
+new file mode 100644
+index 000000000000..4b7390660f8c
+--- /dev/null
++++ b/cmpt300/Makefile
+@@ -0,0 +1 @@
++obj-y := array_stats.o process_ancestors.o
+\ No newline at end of file
+diff --git a/cmpt300/array_stats.c b/cmpt300/array_stats.c
+new file mode 100644
+index 000000000000..866d569e05de
+--- /dev/null
++++ b/cmpt300/array_stats.c
+@@ -0,0 +1,61 @@
++#include "array_stats.h"
++#include <linux/kernel.h>
++#include <linux/syscalls.h>
++#include <linux/errno.h>
++
++SYSCALL_DEFINE3(array_stats, struct array_stats*,stats, long *, data, long, size) {
++	if(size <= 0){
++		return -EINVAL;
++	}
++
++	// temp pointer to array items: temp -> data -> data[0]
++	long* temp;
++	long elem;
++
++	long i = 0; // offset from  data pointer
++
++	long min, max, sum;
++	sum = 0;
++
++	// i = 0 : data[0] -> elem 
++	if(copy_from_user(&elem,data, sizeof(long)) != 0){
++		return -EFAULT;
++	}
++	min = elem;	// minimum is data[0]
++	max = elem;	// maximum is data[0]
++	sum += elem;// sum is data[0]
++	i++;			// i = 1;
++
++	while(i < size){
++		temp = data;
++		temp += i;  // temp -> data[i] | i=1 on first iteration 
++		if(copy_from_user(&elem,temp, sizeof(long)) != 0){
++			return -EFAULT;
++		}
++		sum += elem; // update sum
++		if(elem < min){ // check to update min
++			min = elem;
++		}
++		if(elem > max){ // chech to update max
++			max = elem;
++		}
++		i++;             // increment offset
++	}
++
++	// local stats variable
++	struct array_stats s;
++	// Assign members
++	s.min = min;
++	s.max = max;
++	s.sum = sum;
++	
++	// print form kernel : DEBUGGING SECTION
++	//printk("STATS: Min=%ld Max=%ld Sum=%ld\n",min,max,sum);
++	
++	// copy to user space into stats pointer
++	if(copy_to_user(stats, &s, sizeof(struct array_stats)) != 0){
++		return -EFAULT;
++	}
++	return 0;	// SUCCESS 
++
++}
+\ No newline at end of file
+diff --git a/cmpt300/array_stats.h b/cmpt300/array_stats.h
+new file mode 100644
+index 000000000000..18c084f676d6
+--- /dev/null
++++ b/cmpt300/array_stats.h
+@@ -0,0 +1,10 @@
++#ifndef _ARRAY_STATS_H_
++#define _ARRAY_STATS_H_
++
++struct array_stats {
++	long min;
++	long max;
++	long sum;
++};
++
++#endif
+\ No newline at end of file
+diff --git a/cmpt300/process_ancestors.c b/cmpt300/process_ancestors.c
+new file mode 100644
+index 000000000000..45f054a9d492
+--- /dev/null
++++ b/cmpt300/process_ancestors.c
+@@ -0,0 +1,99 @@
++#include "process_ancestors.h"
++#include <linux/kernel.h>
++#include <linux/syscalls.h>
++#include <linux/errno.h>
++#include <linux/sched.h>
++#include <linux/types.h>
++
++SYSCALL_DEFINE3(process_ancestors, struct process_info*, info_array, long, size, long*, num_filled) {
++	if(size <= 0){
++		return -EINVAL;
++	}
++
++	long count = 0; 			// to be written to num_filled
++	long i = 0; 				//offset for info_array
++	struct process_info p;		// Used to store in kernel before copying process info to userspace
++	struct process_info* arrPtr;// use this to traverse through info_array[size]
++	long cCount = 0;			// counting number of children
++	long sCount = 0;			// counting number of siblings
++	struct list_head* hChild;	// head of children circular linked list
++	struct list_head* hSibling;	// head of sibling circular linked list
++	struct list_head* temp;		// pointer used to traverse the linked lists
++	struct list_head* tmp_head; // temp. header for printing info for children of process
++
++	// Initialize fields to get for each process
++	long pid, state, uid, nvcsw, nivcsw, num_children, num_siblings;
++
++	// get current pointer (global variable)
++	struct task_struct *cur_task = current;
++	struct task_struct *ts;
++	do{
++		if(i > 0 && cur_task->parent != cur_task){							
++			cur_task = cur_task->parent;
++		}
++		// Get all stats apart form num_children and num_siblings
++		pid = cur_task->pid;
++		strcpy(p.name, cur_task->comm);
++		state = cur_task->state;
++		uid = (long)((cur_task->cred)->uid.val);
++		nvcsw = cur_task->nvcsw;
++		nivcsw = cur_task->nivcsw;
++
++		hChild = &(cur_task->children);	// head of children circular linked list
++		hSibling = &(cur_task->sibling);	// head of sibling circular linked list
++
++		// count number of children
++		cCount = 0;
++		list_for_each(temp, hChild) {
++        	++cCount;
++    	}
++    	// Section for printing child info: [FUN Actibity in Assignment Description]
++    	// list_for_each(tmp_head, hChild){
++    	// 	ts = list_entry(tmp_head, struct task_struct, sibling);
++    	// 	printk("Child info: \nPID: %ld\t\t Name:%s\t\n PPID: \t%ld \t\t PName: %s\n\n",ts->pid,ts->comm,ts->parent->pid,ts->parent->comm);
++    	// }
++		num_children = cCount;				// number of children
++		
++		// count number of siblings
++		sCount = 0;
++		list_for_each(temp, hSibling) {
++        	++sCount;
++    	}
++    	if(sCount != 0){
++    		--sCount;					// current process is also counted, hence , minus 1 to acomodate for siblings except current process
++		}
++		num_siblings = sCount;				// number of siblings
++
++		// populate fields of p (of type struct process_info)
++		p.pid = pid;
++		p.state = state;
++		p.uid = uid;
++		p.nvcsw = nvcsw;
++		p.nivcsw = nivcsw;
++		p.num_children = num_children;
++		p.num_siblings = num_siblings;
++		
++		// Initialize arrPtr with appropiate offset
++		arrPtr = info_array;				// points to info_array[0]
++		arrPtr += i; 						// add offset to arrPtr => points to info_array[i]
++
++		// write p to info_array[i]
++		if(copy_to_user(arrPtr,&p,sizeof(struct process_info)) != 0){
++			return -EFAULT;
++		}
++		i++;								// increment offset for info_array[]
++		count++;							// increment the number of process stats written to info_array[]
++		
++		if(i >= size){						// break if array size is less than number of ancestors of current process
++			break;
++		}
++		
++	}while(cur_task->parent != cur_task); 
++
++	// write to num_filled
++	if(copy_to_user(num_filled,&count,sizeof(long)) != 0){
++		return -EFAULT;
++	}
++
++	return 0;
++}
+\ No newline at end of file
+diff --git a/cmpt300/process_ancestors.h b/cmpt300/process_ancestors.h
+new file mode 100644
+index 000000000000..59e7457f8fc2
+--- /dev/null
++++ b/cmpt300/process_ancestors.h
+@@ -0,0 +1,17 @@
++// Structure to hold values returned by process_ancestors sys-call
++#ifndef _PROCESS_ANCESTORS_H
++#define _PROCESS_ANCESTORS_H
++
++#define ANCESTOR_NAME_LEN 16
++struct process_info {
++	long pid;                     /* Process ID */
++	char name[ANCESTOR_NAME_LEN]; /* Program name of process */
++	long state;                   /* Current process state */
++	long uid;                     /* User ID of process owner */
++	long nvcsw;                   /* # of voluntary context switches */
++	long nivcsw;                  /* # of involuntary context switches */
++	long num_children;            /* # of children processes */
++	long num_siblings;            /* # of sibling processes */
++};
++
++#endif
+\ No newline at end of file
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index 2ac3d13a915b..0a899dace87b 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -1296,4 +1296,14 @@ static inline unsigned int ksys_personality(unsigned int personality)
+ 	return old;
+ }
+ 
++
++// array_stats syscall declaration
++struct array_stats;
++asmlinkage long sys_array_stats(struct array_stats *,long *,long);
++
++// process_ancestors syscall declaration
++struct process_info;
++asmlinkage long sys_process_ancestors(struct process_info*, long, long*);
++
++
+ #endif
+-- 
+2.17.1
+
